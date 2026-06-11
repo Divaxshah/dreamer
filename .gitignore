@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.env.local
+.venv
+node_modules
+.next
+dist
+build
+.webmaker
+apps/web/.env.local
+apps/web/.next
+apps/web/node_modules
+agent/.venv
+agent/node_modules

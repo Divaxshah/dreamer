@@ -1,0 +1,16 @@
+{
+  "name": "dreamer",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix apps/web run dev",
+    "build": "npm --prefix apps/web run build",
+    "start": "npm --prefix apps/web run start",
+    "lint": "npm --prefix apps/web run lint",
+    "test": "npm --prefix apps/web run test",
+    "web:install": "npm --prefix apps/web install",
+    "router:install": "npm --prefix preview-router install",
+    "router:start": "npm --prefix preview-router start",
+    "agent:install": "python3 -m venv agent/.venv && agent/.venv/bin/python -m pip install -e agent"
+  }
+}

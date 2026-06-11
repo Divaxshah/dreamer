@@ -1,0 +1,17 @@
+{
+  "name": "hermes-agent",
+  "version": "1.0.0",
+  "description": "CLI-only software development agent",
+  "private": true,
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@streamdown/math": "^1.0.2",
+    "agent-browser": "^0.26.0"
+  },
+  "overrides": {
+    "lodash": "4.18.1"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

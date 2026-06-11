@@ -1,0 +1,11 @@
+{
+  auto_https off
+}
+
+{$WEBMAKER_APP_DOMAIN:app.localhost} {
+  reverse_proxy localhost:3000
+}
+
+*.{$WEBMAKER_PREVIEW_DOMAIN:preview.localhost} {
+  reverse_proxy localhost:4999
+}
