@@ -379,34 +379,92 @@ All variables live in `apps/web/.env.local`. None are required to just run — s
 
 ---
 
-## Production deployment
+## Production Deployment
 
-See [`deploy/setup-ec2.sh`](./deploy/setup-ec2.sh) for a complete EC2 setup script.
+Dreamer production uses Caddy in front of the Next.js app and preview router:
 
-The short version:
+```text
+Cloudflare -> Caddy :80
+  app.kreativespace.com        -> Next.js :3000
+  *.preview.kreativespace.com  -> preview-router :4999 -> Podman preview port
+
+Next.js /api/generate       -> sandboxed Hermes Podman image
+Next.js /api/preview/docker -> rootless Podman Vite containers
+```
+
+On EC2:
 
 ```bash
-# On EC2 (Ubuntu 22.04, t3.medium)
-bash deploy/setup-ec2.sh
+cd /home/ubuntu/dreamer
+./deploy/setup-ec2.sh
 
-# Set production env
-cp apps/web/.env.example apps/web/.env.production
-# Edit WEBMAKER_PREVIEW_DOMAIN=preview.yourdomain.com etc.
+npm run web:install
+npm run router:install
+npm run agent:install
+npm run hermes:image
+npm run build
+```
 
-# Build and start
-npm run web:build
+Create `/home/ubuntu/dreamer/apps/web/.env.local`:
+
+```bash
+NODE_ENV=production
+NEXT_PUBLIC_APP_URL=https://app.kreativespace.com
+
+WEBMAKER_HERMES_RUNNER=podman
+WEBMAKER_HERMES_IMAGE=dreamer-hermes:local
+WEBMAKER_HERMES_PATH=/home/ubuntu/dreamer/agent
+WEBMAKER_HERMES_PYTHON=/home/ubuntu/dreamer/agent/.venv/bin/python
+WEBMAKER_HERMES_HOME=/home/ubuntu/.hermes
+
+WEBMAKER_WORKSPACE_ROOT=/home/ubuntu/.webmaker/workspaces
+WEBMAKER_PREVIEW_IMAGE=node:20-alpine
+
+WEBMAKER_APP_DOMAIN=app.kreativespace.com
+WEBMAKER_PREVIEW_DOMAIN=preview.kreativespace.com
+WEBMAKER_PREVIEW_PROTOCOL=https
+WEBMAKER_PREVIEW_PUBLIC_PORT=
+PREVIEW_ROUTER_IPC_URL=http://127.0.0.1:4998
+```
+
+Set the preview-router domain in `ecosystem.config.js`:
+
+```js
+WEBMAKER_PREVIEW_DOMAIN: "preview.kreativespace.com"
+```
+
+Add proxied Cloudflare DNS records:
+
+```text
+A  app        <EC2 IPv4>
+A  *.preview  <EC2 IPv4>
+```
+
+Enable **WebSockets** in Cloudflare. For the simplest setup, set Cloudflare
+SSL/TLS mode to **Flexible**, because the included Caddy config serves HTTP on
+the EC2 origin. For stricter origin TLS, install a Cloudflare Origin Certificate
+covering `app.kreativespace.com` and `*.preview.kreativespace.com`, then
+configure Caddy with that certificate.
+
+Install/reload Caddy and start PM2:
+
+```bash
+sudo cp /home/ubuntu/dreamer/Caddyfile /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+
 pm2 start ecosystem.config.js
 pm2 save
 ```
 
-Add two DNS records in Cloudflare:
+Verify:
 
-```
-A   app.yourdomain.com           → EC2 IP   (Proxied)
-A   *.preview.yourdomain.com     → EC2 IP   (Proxied)
+```bash
+curl -s http://127.0.0.1:3000/api/health | python3 -m json.tool
+curl -s http://127.0.0.1:3000/api/preview/docker
+curl -s http://127.0.0.1:4998/ports | python3 -m json.tool
 ```
 
-Enable **WebSocket proxying** in Cloudflare → Network tab. Required for Vite HMR through the proxy.
+Detailed EC2 notes live in [`apps/web/deploy.md`](apps/web/deploy.md).
 
 ---
 
