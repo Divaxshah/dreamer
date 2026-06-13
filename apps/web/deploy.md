@@ -10,11 +10,15 @@ Podman containers and are exposed through `*.preview.<domain>` via the root
 ```text
 Cloudflare -> Caddy :80
   app.kreativespace.com        -> Next.js :3000
-  *.preview.kreativespace.com  -> preview-router :4999 -> Podman Vite port
+  *.kreativespace.com          -> preview-router :4999 -> Podman Vite port
 
 Next.js /api/generate       -> Podman Hermes bridge image
 Next.js /api/preview/docker -> podman run -p 127.0.0.1::5173 node:20-alpine
 ```
+
+Use one wildcard level for previews: `https://ws-abc123.kreativespace.com`.
+Cloudflare Universal SSL covers `*.kreativespace.com`, but it usually does not
+cover nested wildcard hosts like `*.preview.kreativespace.com`.
 
 ## Setup
 
@@ -59,7 +63,7 @@ WEBMAKER_WORKSPACE_ROOT=/home/ubuntu/.webmaker/workspaces
 WEBMAKER_PREVIEW_IMAGE=node:20-alpine
 
 WEBMAKER_APP_DOMAIN=app.kreativespace.com
-WEBMAKER_PREVIEW_DOMAIN=preview.kreativespace.com
+WEBMAKER_PREVIEW_DOMAIN=kreativespace.com
 WEBMAKER_PREVIEW_PROTOCOL=https
 WEBMAKER_PREVIEW_PUBLIC_PORT=
 PREVIEW_ROUTER_IPC_URL=http://127.0.0.1:4998
@@ -69,7 +73,7 @@ Set the same `WEBMAKER_PREVIEW_DOMAIN` value for the `preview-router` PM2 proces
 in the root `ecosystem.config.js`.
 
 ```js
-WEBMAKER_PREVIEW_DOMAIN: "preview.kreativespace.com"
+WEBMAKER_PREVIEW_DOMAIN: "kreativespace.com"
 ```
 
 ## Cloudflare DNS
@@ -77,16 +81,31 @@ WEBMAKER_PREVIEW_DOMAIN: "preview.kreativespace.com"
 Create proxied DNS records:
 
 ```text
-Type  Name       Content       Proxy
-A     app        <EC2 IPv4>    Proxied
-A     *.preview  <EC2 IPv4>    Proxied
+Type  Name  Content       Proxy
+A     app   <EC2 IPv4>    Proxied
+A     *     <EC2 IPv4>    Proxied
 ```
 
 In Cloudflare, enable WebSockets and set SSL/TLS mode to **Flexible** for the
 simplest setup because Caddy is serving HTTP on the EC2 origin in this config.
 For stricter origin TLS, install a Cloudflare Origin Certificate covering
-`app.kreativespace.com` and `*.preview.kreativespace.com`, then configure Caddy
-with that certificate.
+`app.kreativespace.com` and `*.kreativespace.com`, then configure Caddy with
+that certificate.
+
+## GoDaddy DNS
+
+If GoDaddy manages DNS directly, create:
+
+```text
+Type  Name  Value       TTL
+A     app   <EC2 IPv4>  600
+A     *     <EC2 IPv4>  600
+```
+
+GoDaddy DNS does not provide Cloudflare's proxy TLS. For HTTPS previews on
+wildcard subdomains, either move DNS to Cloudflare or configure Caddy public
+HTTPS with DNS-01 wildcard certificates. Cloudflare is the recommended route for
+Dreamer previews because Vite HMR WebSockets work cleanly through the proxy.
 
 ## Caddy
 
@@ -104,8 +123,8 @@ sudo cp /home/ubuntu/dreamer/Caddyfile /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-Cloudflare should point both `app.kreativespace.com` and
-`*.preview.kreativespace.com` to the EC2 instance, with WebSockets enabled.
+Cloudflare should point both `app.kreativespace.com` and `*.kreativespace.com`
+to the EC2 instance, with WebSockets enabled.
 
 ## Start
 
@@ -122,6 +141,7 @@ curl -s http://127.0.0.1:3000/api/health | python3 -m json.tool
 curl -s http://127.0.0.1:3000/api/preview/docker
 curl -s http://127.0.0.1:4998/ports | python3 -m json.tool
 curl -I https://app.kreativespace.com
+curl -I https://ws-test.kreativespace.com
 ```
 
 Expected:
