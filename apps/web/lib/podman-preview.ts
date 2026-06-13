@@ -427,6 +427,10 @@ export async function startDockerPreview(
     const key = sanitizeWorkspaceId(workspaceId);
     const containerName = getContainerName(key);
 
+    if (options.project) {
+      await syncProjectToWorkspaceDisk(key, options.project);
+    }
+
     if (!options.force) {
       const existing = await resolvePreviewContainer(key);
       if (existing) {
@@ -446,7 +450,6 @@ export async function startDockerPreview(
           "Workspace is missing package.json on disk. Run a generation first."
         );
       }
-      await syncProjectToWorkspaceDisk(key, options.project);
     }
 
     if (!(await pathExists(packageJsonPath))) {

@@ -1,9 +1,10 @@
 "use client";
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { GeneratedProject } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { AlertCircle, Loader2, RefreshCw } from "lucide-react";
+import { getPreviewSessionKey } from "@/lib/preview-session-key";
 
 interface DockerPreviewFrameProps {
   project: GeneratedProject;
@@ -33,7 +34,9 @@ export function DockerPreviewFrame({
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>("Starting Podman preview...");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewRevision, setPreviewRevision] = useState(0);
   const [showSlowHint, setShowSlowHint] = useState(false);
+  const projectSyncKey = useMemo(() => getPreviewSessionKey(project), [project]);
 
   useLayoutEffect(() => {
     const myGen = ++runGenRef.current;
@@ -80,6 +83,7 @@ export function DockerPreviewFrame({
         if (abort.signal.aborted || myGen !== runGenRef.current) return;
 
         setPreviewUrl(payload.url);
+        setPreviewRevision((revision) => revision + 1);
         setStatus(null);
         onReady?.();
       } catch (e) {
@@ -100,7 +104,7 @@ export function DockerPreviewFrame({
       abort.abort();
       window.clearTimeout(slowTimer);
     };
-  }, [refreshKey, workspaceId, forceRestart, onReady]);
+  }, [refreshKey, workspaceId, forceRestart, onReady, projectSyncKey]);
 
   return (
     <div
@@ -109,7 +113,7 @@ export function DockerPreviewFrame({
     >
       {previewUrl ? (
         <iframe
-          key={previewUrl}
+          key={`${previewUrl}:${previewRevision}`}
           title="App preview"
           src={previewUrl}
           className="min-h-0 flex-1 w-full border-0 bg-white"
