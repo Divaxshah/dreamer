@@ -405,6 +405,10 @@ npm run hermes:image
 npm run build
 ```
 
+The production build script copies `.next/static` and `public` into
+`.next/standalone` so the standalone server can serve CSS, JS, fonts, and
+favicon assets.
+
 Create `/home/ubuntu/dreamer/apps/web/.env.local`:
 
 ```bash

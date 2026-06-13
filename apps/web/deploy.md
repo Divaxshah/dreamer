@@ -37,6 +37,10 @@ cd ..
 npm run hermes:image
 ```
 
+`npm run build` copies `.next/static` and `public` into `.next/standalone` after
+`next build`. This is required because the production PM2 process runs
+`.next/standalone/server.js`.
+
 ## Environment
 
 Create `/home/ubuntu/dreamer/apps/web/.env.local`:

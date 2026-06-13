@@ -7,7 +7,7 @@
     "dev:turbo": "next dev",
     "dev:unlock": "rm -f .next/dev/lock",
     "clean": "rm -rf .next",
-    "build": "next build",
+    "build": "next build && node scripts/copy-standalone-assets.mjs",
     "start": "next start",
     "router:start": "npm --prefix ../../preview-router start",
     "router:install": "npm --prefix ../../preview-router install",
