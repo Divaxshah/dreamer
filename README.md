@@ -1,403 +1,135 @@
 # Dreamer
 
-AI-powered web app builder. Describe what you want, get a live, editable app — instantly.
+AI-powered web app builder. Describe what you want, get a live editable app, and preview it in isolated Podman containers.
 
-Built on [Hermes](https://github.com/Divaxshah/hermes-agent) for AI generation and Podman for isolated live previews.
+Dreamer is built from three pieces:
 
-```
-apps/web          Next.js 16 studio UI + preview API
-agent/            Hermes Python agent (AI generation backend)
-preview-router/   Reverse proxy for *.preview.<domain> subdomains
-```
-
----
-
-## Prerequisites
-
-You need four things before the monorepo scripts will work:
-
-- **Node.js** 20+
-- **Python** 3.11–3.13
-- **uv** (Python package manager)
-- **Podman** (container runtime for live previews)
-
-### Install Node.js
-
-Use [nvm](https://github.com/nvm-sh/nvm) or download from [nodejs.org](https://nodejs.org).
-
-```bash
-# Verify
-node --version   # should print v20.x or higher
+```text
+apps/web          Next.js 16 studio UI + API routes
+agent/            Hermes agent bridge used for generation
+preview-router/   Reverse proxy for production preview subdomains
 ```
 
-### Install uv
+## Architecture
 
-```bash
-# macOS / Linux
-curl -LsSf https://astral.sh/uv/install.sh | sh
+Local development:
 
-# Windows (PowerShell)
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-
-# Verify
-uv --version
+```text
+Browser -> Next.js dev server :3000
+Next.js /api/generate       -> Hermes bridge, usually via Podman
+Next.js /api/preview/docker -> rootless Podman preview container
+Preview iframe              -> direct 127.0.0.1:<mapped-port>
 ```
 
-### Install Podman
-
-Podman replaces Docker — no daemon, no root, same container images.
-
-<details>
-<summary><strong>macOS</strong></summary>
-
-```bash
-# Install via Homebrew
-brew install podman
-
-# Initialize and start the Podman VM (required on macOS — containers run in a Linux VM)
-podman machine init
-podman machine start
-
-# Verify
-podman info
-```
-
-To start the VM automatically on login:
-```bash
-podman machine set --rootful=false
-# The machine auto-starts on next login once initialized
-```
-
-</details>
-
-<details>
-<summary><strong>Linux (Ubuntu / Debian)</strong></summary>
-
-```bash
-sudo apt-get update
-sudo apt-get install -y podman
-
-# Enable rootless Podman for your user (allows containers without sudo)
-# This is required — Dreamer runs containers as your normal user
-loginctl enable-linger $USER
-
-# Verify
-podman info
-```
-
-On Ubuntu 22.04+ Podman is in the default repos. For older versions add the Kubic repo:
-```bash
-# Ubuntu 20.04 only
-. /etc/os-release
-echo "deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_${VERSION_ID}/ /" \
-  | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
-curl -L "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_${VERSION_ID}/Release.key" \
-  | sudo apt-key add -
-sudo apt-get update && sudo apt-get install -y podman
-```
-
-</details>
-
-<details>
-<summary><strong>Linux (Fedora / RHEL / CentOS)</strong></summary>
-
-```bash
-# Podman is installed by default on Fedora 31+
-# If not present:
-sudo dnf install -y podman
-
-loginctl enable-linger $USER
-
-podman info
-```
-
-</details>
-
-<details>
-<summary><strong>Windows</strong></summary>
-
-**Option A — Podman Desktop (recommended, includes GUI)**
-
-1. Download the installer from [podman-desktop.io](https://podman-desktop.io/downloads)
-2. Run the `.exe` and follow the wizard
-3. Podman Desktop installs Podman CLI + a WSL2-backed Linux VM automatically
-4. Open a new terminal and verify:
-
-```powershell
-podman info
-```
-
-**Option B — Podman CLI only (via winget)**
-
-```powershell
-winget install RedHat.Podman
-
-# After install, initialize the Podman machine
-podman machine init
-podman machine start
-
-podman info
-```
-
-> **Note:** On Windows, Dreamer's preview containers run inside a WSL2 VM. WSL2 must be enabled (`wsl --install` in an admin PowerShell if it isn't). The `npm run dev` command works from either PowerShell or WSL2 terminal.
-
-</details>
-
----
-
-## Local Setup
-
-### 1. Clone and install
-
-```bash
-git clone https://github.com/Divaxshah/dreamer.git
-cd dreamer
-
-# Install all dependencies (web + preview-router)
-npm run web:install
-
-# Install Python agent dependencies
-npm run agent:install
-
-# Build the sandboxed Hermes bridge image used by Webmaker
-npm run hermes:image
-```
-
-### 2. Configure environment
-
-```bash
-cp apps/web/.env.example apps/web/.env.local
-```
-
-Open `apps/web/.env.local` and fill in:
-
-```bash
-# ── Agent ──────────────────────────────────────────────────────────
-# Leave as-is if you cloned the monorepo — defaults point to ../../agent
-WEBMAKER_HERMES_PATH=../../agent
-WEBMAKER_HERMES_PYTHON=../../agent/.venv/bin/python
-
-# ── LLM Provider ───────────────────────────────────────────────────
-# Pick one. OpenRouter gives you access to all models with one key.
-# Get a key at https://openrouter.ai/keys
-OPENROUTER_API_KEY=sk-or-...
-
-# Or use a direct provider:
-# ANTHROPIC_API_KEY=sk-ant-...
-# OPENAI_API_KEY=sk-...
-# GOOGLE_API_KEY=...
-
-# ── Preview ────────────────────────────────────────────────────────
-# Domain for live previews. Leave as-is for local dev with dnsmasq (see below).
-WEBMAKER_PREVIEW_DOMAIN=preview.localhost
-WEBMAKER_APP_DOMAIN=app.localhost
-
-# ── Optional: Upstash Redis ────────────────────────────────────────
-# Only needed for shared preview links and cross-restart session sync.
-# Leave blank to skip.
-# UPSTASH_REDIS_REST_URL=
-# UPSTASH_REDIS_REST_TOKEN=
-```
-
-### 3. Pull the preview container image
-
-Dreamer runs generated apps in a `node:20-alpine` container. Pull it once so the first preview doesn't have to download it:
-
-```bash
-podman pull node:20-alpine
-```
-
-### 4. Set up wildcard DNS for local previews
-
-Each live preview gets a subdomain like `ws-abc123.preview.localhost`. Your machine needs to resolve `*.preview.localhost` to `127.0.0.1`.
-
-**Option A — dnsmasq (recommended, zero maintenance)**
-
-<details>
-<summary>macOS</summary>
-
-```bash
-brew install dnsmasq
-
-# Add wildcard rule
-echo "address=/.preview.localhost/127.0.0.1" >> $(brew --prefix)/etc/dnsmasq.conf
-echo "address=/.app.localhost/127.0.0.1"     >> $(brew --prefix)/etc/dnsmasq.conf
-
-# Start dnsmasq
-sudo brew services start dnsmasq
-
-# Tell macOS to use dnsmasq for .localhost domains
-sudo mkdir -p /etc/resolver
-echo "nameserver 127.0.0.1" | sudo tee /etc/resolver/localhost
-
-# Verify
-ping -c1 ws-anything.preview.localhost   # should resolve to 127.0.0.1
-```
-
-</details>
-
-<details>
-<summary>Linux (Ubuntu / Debian)</summary>
-
-```bash
-sudo apt-get install -y dnsmasq
-
-# Add wildcard rules
-echo "address=/.preview.localhost/127.0.0.1" | sudo tee -a /etc/dnsmasq.conf
-echo "address=/.app.localhost/127.0.0.1"     | sudo tee -a /etc/dnsmasq.conf
-
-# If systemd-resolved is running (Ubuntu 18.04+), configure it to use dnsmasq
-# for .localhost:
-sudo mkdir -p /etc/systemd/resolved.conf.d
-cat <<EOF | sudo tee /etc/systemd/resolved.conf.d/dnsmasq.conf
-[Resolve]
-DNS=127.0.0.1
-Domains=~preview.localhost ~app.localhost
-EOF
-
-sudo systemctl restart dnsmasq
-sudo systemctl restart systemd-resolved
-
-# Verify
-ping -c1 ws-anything.preview.localhost
-```
-
-</details>
-
-<details>
-<summary>Windows</summary>
-
-Windows doesn't have dnsmasq. Add specific entries to `C:\Windows\System32\drivers\etc\hosts` as you create new sessions — or use the `/etc/hosts` approach in WSL2:
-
-```
-127.0.0.1   app.localhost
-127.0.0.1   ws-abc123.preview.localhost
-```
-
-You only need one entry per active session, and sessions reuse IDs across restarts. For a smoother experience, consider using [Acrylic DNS Proxy](https://mayakron.altervista.org/support/acrylic/) which supports wildcards on Windows.
-
-</details>
-
-**Option B — `/etc/hosts` per session (quick and dirty)**
-
-No install needed. Just add entries as you test:
-
-```
-127.0.0.1   app.localhost
-127.0.0.1   ws-abc123.preview.localhost
-127.0.0.1   ws-def456.preview.localhost
-```
-
-The workspace ID is shown in the UI when a preview starts.
-
-### 5. Run
-
-```bash
-npm run dev
-```
-
-This starts three processes in parallel:
-- `apps/web` — Next.js on `http://localhost:3000` (or `http://app.localhost` with dnsmasq)
-- `preview-router` — subdomain proxy on port `4999`
-- Caddy is not needed locally — the preview router handles routing directly
-
-Open [http://localhost:3000](http://localhost:3000) and start building.
-
----
-
-## How previews work
-
-When you generate an app, Dreamer:
-
-1. Writes the generated files to `apps/web/.webmaker/workspaces/<session-id>/`
-2. Spins up a rootless Podman container mounting that directory
-3. Runs `npm install && npm run dev` inside the container (Vite on port 5173)
-4. Registers the container's host port with the preview router
-5. Returns `https://ws-<id>.preview.localhost` as the preview URL
-6. Iframes that URL in the studio panel
-
-When you edit, Hermes writes updated files to the same workspace directory. Vite's HMR picks up the changes through the volume mount — no container restart needed.
-
-Containers are stopped automatically after 30 minutes of inactivity and respawned on demand (with `node_modules` cached so restarts take ~3 seconds instead of ~20).
-
----
-
-## Project structure
-
-```
-dreamer/
-├── apps/
-│   └── web/                    Next.js studio UI
-│       ├── app/                App router pages and API routes
-│       │   └── api/
-│       │       ├── generate/   Streaming generation endpoint
-│       │       └── preview/    Podman container lifecycle
-│       ├── components/         React components
-│       │   └── preview/        Preview panel, code viewer, console
-│       ├── lib/
-│       │   ├── hermes-bridge.ts  Spawns the Python agent subprocess
-│       │   ├── podman-preview.ts Container lifecycle (start/stop/logs)
-│       │   └── store.ts          Zustand state
-│       └── .env.example
-│
-├── agent/                      Hermes Python agent
-│   ├── webmaker_bridge.py      Entry point — reads JSON from stdin, streams NDJSON to stdout
-│   ├── run_agent.py            AIAgent runner
-│   ├── agent/                  Core agent modules
-│   ├── skills/
-│   │   └── software-development/
-│   │       └── frontend-design/  Preloaded for every generation
-│   └── pyproject.toml
-│
-├── preview-router/             Subdomain → container port proxy
-│   └── index.js                Node.js HTTP + WebSocket proxy (port 4999)
-│
-├── Caddyfile                   Reverse proxy config (used in production)
-├── ecosystem.config.js         PM2 process config (used in production)
-└── package.json                Monorepo scripts
-```
-
----
-
-## Environment variables reference
-
-All variables live in `apps/web/.env.local`. None are required to just run — sensible defaults are used where possible.
-
-| Variable | Default | Description |
-|---|---|---|
-| `WEBMAKER_HERMES_PATH` | `../../agent` | Path to the agent directory |
-| `WEBMAKER_HERMES_PYTHON` | `../../agent/.venv/bin/python` | Python executable inside the agent venv |
-| `WEBMAKER_HERMES_HOME` | _(Hermes default)_ | Hermes config home (`~/.hermes` if unset) |
-| `WEBMAKER_PREVIEW_DOMAIN` | `preview.localhost` | Subdomain base for live previews |
-| `WEBMAKER_APP_DOMAIN` | `app.localhost` | Domain for the studio UI |
-| `WEBMAKER_WORKSPACE_ROOT` | `.webmaker/workspaces` | Where workspace files are stored |
-| `WEBMAKER_DOCKER_IMAGE` | `node:20-alpine` | Container image for previews |
-| `PREVIEW_ROUTER_IPC_URL` | `http://127.0.0.1:4998` | Internal IPC between web app and preview router |
-| `OPENROUTER_API_KEY` | — | OpenRouter API key (recommended) |
-| `UPSTASH_REDIS_REST_URL` | — | Optional: Upstash Redis for session persistence |
-| `UPSTASH_REDIS_REST_TOKEN` | — | Optional: Upstash Redis token |
-
----
-
-## Production Deployment
-
-Dreamer production uses Caddy in front of the Next.js app and preview router:
+Production:
 
 ```text
 Cloudflare -> Caddy :80
-  app.kreativespace.com        -> Next.js :3000
-  *.kreativespace.com          -> preview-router :4999 -> Podman preview port
+  app.kreativespace.com -> Next.js standalone server :3000
+  *.kreativespace.com   -> preview-router :4999 -> Podman preview port
 
 Next.js /api/generate       -> sandboxed Hermes Podman image
 Next.js /api/preview/docker -> rootless Podman Vite containers
 ```
 
-Production preview URLs should use one wildcard level, for example
-`https://ws-abc123.kreativespace.com`. Cloudflare Universal SSL covers
-`*.kreativespace.com`; it usually does not cover nested wildcards like
-`*.preview.kreativespace.com` unless you buy/configure an advanced certificate.
+Generated project files are stored on disk and mounted into containers:
 
-On EC2:
+```text
+Host:      apps/web/.webmaker/workspaces/<workspace-id>
+Preview:   /app
+Hermes:    /workspaces/<workspace-id>
+```
+
+That gives the app a durable workspace you can export while keeping generation commands and preview runtime inside containers.
+
+## Prerequisites
+
+- Node.js 20+
+- Python 3.11-3.13
+- Podman
+- Linux/macOS/WSL2 shell for local development
+
+Install Podman on Ubuntu:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y podman
+loginctl enable-linger "$USER"
+podman info
+```
+
+On macOS:
+
+```bash
+brew install podman
+podman machine init
+podman machine start
+podman info
+```
+
+## Local Setup
+
+Install everything:
+
+```bash
+git clone https://github.com/Divaxshah/dreamer.git
+cd dreamer
+
+npm run web:install
+npm run router:install
+npm run agent:install
+npm run hermes:image
+podman pull node:20-alpine
+```
+
+Create local env:
+
+```bash
+cp apps/web/.env.example apps/web/.env.local
+```
+
+Minimum local `.env.local`:
+
+```bash
+WEBMAKER_HERMES_PATH=../../agent
+WEBMAKER_HERMES_PYTHON=../../agent/.venv/bin/python
+WEBMAKER_HERMES_RUNNER=podman
+WEBMAKER_HERMES_IMAGE=dreamer-hermes:local
+
+WEBMAKER_WORKSPACE_ROOT=.webmaker/workspaces
+WEBMAKER_PREVIEW_IMAGE=node:20-alpine
+
+WEBMAKER_APP_DOMAIN=app.localhost
+WEBMAKER_PREVIEW_DOMAIN=preview.localhost
+WEBMAKER_PREVIEW_PROTOCOL=http
+WEBMAKER_PREVIEW_ROUTER_PORT=4999
+WEBMAKER_PREVIEW_PUBLIC_PORT=4999
+PREVIEW_ROUTER_IPC_URL=http://127.0.0.1:4998
+
+OPENROUTER_API_KEY=sk-or-...
+```
+
+Run:
+
+```bash
+npm run dev
+```
+
+Open:
+
+```text
+http://localhost:3000
+```
+
+For local development, previews use direct Podman mapped ports in the browser, so Caddy and wildcard DNS are not required.
+
+## Production Deploy On EC2
+
+These examples use `kreativespace.com`. Replace with your own domain.
+
+### 1. Server Setup
+
+On Ubuntu EC2:
 
 ```bash
 cd /home/ubuntu/dreamer
@@ -410,9 +142,9 @@ npm run hermes:image
 npm run build
 ```
 
-The production build script copies `.next/static` and `public` into
-`.next/standalone` so the standalone server can serve CSS, JS, fonts, and
-favicon assets.
+The build script copies `.next/static` and `public` into `.next/standalone`, which is required because PM2 runs Next's standalone server.
+
+### 2. Production Environment
 
 Create `/home/ubuntu/dreamer/apps/web/.env.local`:
 
@@ -436,28 +168,52 @@ WEBMAKER_PREVIEW_PUBLIC_PORT=
 PREVIEW_ROUTER_IPC_URL=http://127.0.0.1:4998
 ```
 
-`ecosystem.config.js` reads `apps/web/.env.local` and passes
-`WEBMAKER_PREVIEW_DOMAIN` to `preview-router`, so keep the domain value in one
-place: `.env.local`.
+`ecosystem.config.js` reads this file and passes `WEBMAKER_PREVIEW_DOMAIN` to `preview-router`, so keep domain config in `.env.local`.
 
-### Cloudflare DNS
+The example above is the recommended public setup: browsers use HTTPS, Cloudflare handles TLS, and Caddy receives plain HTTP on the EC2 origin.
 
-Add proxied Cloudflare DNS records:
+For a temporary HTTP-only deployment without Cloudflare TLS, use HTTP for both the studio and previews:
 
-```text
-A  app        <EC2 IPv4>
-A  *          <EC2 IPv4>
+```bash
+NEXT_PUBLIC_APP_URL=http://app.kreativespace.com
+WEBMAKER_PREVIEW_PROTOCOL=http
+WEBMAKER_PREVIEW_PUBLIC_PORT=
 ```
 
-Enable **WebSockets** in Cloudflare. For the simplest setup, set Cloudflare
-SSL/TLS mode to **Flexible**, because the included Caddy config serves HTTP on
-the EC2 origin. For stricter origin TLS, install a Cloudflare Origin Certificate
-covering `app.kreativespace.com` and `*.kreativespace.com`, then configure Caddy
-with that certificate.
+Do not mix an HTTPS studio with HTTP previews. Browsers block HTTP iframes inside an HTTPS page as mixed content.
 
-### GoDaddy DNS
+### 3. DNS
 
-If GoDaddy manages DNS directly, create these records:
+Use one wildcard level for previews:
+
+```text
+https://ws-abc123.kreativespace.com
+```
+
+Do not use nested preview domains like:
+
+```text
+https://ws-abc123.preview.kreativespace.com
+```
+
+Cloudflare Universal SSL usually covers `*.kreativespace.com`, but not `*.preview.kreativespace.com`.
+
+Cloudflare DNS records:
+
+```text
+Type  Name  Value       Proxy
+A     app   <EC2 IPv4>  Proxied
+A     *     <EC2 IPv4>  Proxied
+```
+
+Cloudflare settings:
+
+```text
+SSL/TLS mode: Flexible
+Network -> WebSockets: On
+```
+
+GoDaddy DNS records if GoDaddy manages DNS directly:
 
 ```text
 Type  Name  Value       TTL
@@ -465,19 +221,18 @@ A     app   <EC2 IPv4>  600
 A     *     <EC2 IPv4>  600
 ```
 
-GoDaddy DNS alone does not provide Cloudflare's proxy TLS. For HTTPS previews on
-`*.kreativespace.com`, either:
+GoDaddy DNS alone does not provide Cloudflare's proxy TLS. HTTP-only previews work with plain GoDaddy DNS, but the browser URL will be `http://...`. For HTTPS wildcard previews, either move DNS to Cloudflare or configure Caddy public HTTPS with DNS-01 wildcard certificates. Cloudflare is the recommended path for Dreamer.
 
-- move DNS to Cloudflare and use the Cloudflare setup above, or
-- use Caddy public HTTPS with DNS-01 wildcard certificates.
+### 4. Caddy
 
-The Cloudflare route is recommended for this project because it also proxies
-preview WebSockets cleanly.
+The included Caddy setup is an HTTP server. It works in two modes:
 
-### Caddy
+```text
+Cloudflare HTTPS -> Caddy HTTP origin   Recommended public setup
+Browser HTTP     -> Caddy HTTP          Temporary direct setup
+```
 
-Caddy is the public HTTP origin that Cloudflare talks to. The included
-`Caddyfile` intentionally uses `http://` site labels with `auto_https off`:
+Use this Caddyfile for either mode:
 
 ```caddy
 {
@@ -493,74 +248,195 @@ http://*.kreativespace.com {
 }
 ```
 
-That pairs with Cloudflare SSL/TLS mode **Flexible**. If Caddy binds only `:443`
-or Cloudflare is set to Full/Strict without an origin certificate, you will see
-Cloudflare `521` or `525` errors.
-
-Install/reload Caddy and start PM2:
+Install, write the production Caddyfile, and reload:
 
 ```bash
-sudo cp /home/ubuntu/dreamer/Caddyfile /etc/caddy/Caddyfile
+sudo apt-get update
+sudo apt-get install -y caddy
+sudo tee /etc/caddy/Caddyfile >/dev/null <<'CADDY'
+{
+  auto_https off
+}
+
+http://app.kreativespace.com {
+  reverse_proxy localhost:3000
+}
+
+http://*.kreativespace.com {
+  reverse_proxy localhost:4999
+}
+CADDY
 sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 sudo ss -ltnp | grep -E ':80|:3000|:4999'
-
-pm2 start ecosystem.config.js
-pm2 save
 ```
 
-Verify:
+Expected: Caddy listens on `:80`. If it only listens on `:443`, Cloudflare Flexible will fail. The repo `Caddyfile` is a reusable template, but systemd Caddy does not automatically read `apps/web/.env.local`, so the production file above uses literal domains.
+
+For Cloudflare Full/Strict, install a Cloudflare Origin Certificate covering `app.kreativespace.com` and `*.kreativespace.com`, remove the HTTP-only Caddy mode, and configure Caddy with that certificate.
+
+### 5. Start PM2
+
+```bash
+cd /home/ubuntu/dreamer
+pm2 delete all
+pm2 start ecosystem.config.js --update-env
+pm2 save
+pm2 status
+```
+
+### 6. Verify
+
+On EC2:
 
 ```bash
 curl -s http://127.0.0.1:3000/api/health | python3 -m json.tool
 curl -s http://127.0.0.1:3000/api/preview/docker
 curl -s http://127.0.0.1:4998/ports | python3 -m json.tool
+curl -i -H "Host: app.kreativespace.com" http://127.0.0.1
+```
+
+From your local machine:
+
+```bash
+curl -I https://app.kreativespace.com
 curl -I https://ws-test.kreativespace.com
+```
+
+`ws-test` will likely return a preview-not-ready response until a workspace exists, but it should not fail TLS.
+
+## Common Commands
+
+```bash
+npm run dev             # local Next dev server
+npm run build           # production Next standalone build
+npm run hermes:image    # build sandboxed Hermes image
+npm run web:install     # install apps/web dependencies
+npm run router:install  # install preview-router dependencies
+npm run agent:install   # create agent venv and install agent
+```
+
+PM2:
+
+```bash
+pm2 status
+pm2 logs dreamer-web --lines 80
+pm2 logs preview-router --lines 80
+pm2 restart ecosystem.config.js --update-env
+pm2 flush
+```
+
+Podman previews:
+
+```bash
+podman ps --filter label=webmaker.preview=true
+podman logs preview-<workspace-id>
+curl -s http://127.0.0.1:4998/ports | python3 -m json.tool
+```
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `WEBMAKER_HERMES_RUNNER` | `podman` | Runs Hermes through Podman or `local` for direct Python |
+| `WEBMAKER_HERMES_IMAGE` | `dreamer-hermes:local` | Hermes bridge container image |
+| `WEBMAKER_HERMES_PATH` | `../../agent` | Agent directory |
+| `WEBMAKER_HERMES_PYTHON` | `../../agent/.venv/bin/python` | Local Python executable for `WEBMAKER_HERMES_RUNNER=local` |
+| `WEBMAKER_HERMES_HOME` | `~/.hermes` | Hermes config home |
+| `WEBMAKER_WORKSPACE_ROOT` | `.webmaker/workspaces` | Workspace storage path |
+| `WEBMAKER_PREVIEW_IMAGE` | `node:20-alpine` | Generated-app preview image |
+| `WEBMAKER_APP_DOMAIN` | `app.localhost` | Studio UI domain |
+| `WEBMAKER_PREVIEW_DOMAIN` | `preview.localhost` | Preview wildcard base |
+| `WEBMAKER_PREVIEW_PROTOCOL` | `http` locally, usually `https` in prod | Preview URL protocol. Use `http` for HTTP-only deployments |
+| `WEBMAKER_PREVIEW_PUBLIC_PORT` | `4999` locally, empty in prod | Public preview port suffix. Keep empty when Caddy listens on default `80` or `443` |
+| `PREVIEW_ROUTER_IPC_URL` | `http://127.0.0.1:4998` | Web app to preview-router IPC |
+| `OPENROUTER_API_KEY` | empty | Recommended model provider key |
+| `UPSTASH_REDIS_REST_URL` | empty | Optional dashboard/session persistence |
+| `UPSTASH_REDIS_REST_TOKEN` | empty | Optional dashboard/session persistence |
+
+## Troubleshooting
+
+**Cloudflare 521**
+
+Caddy is not reachable on port `80`, or EC2 security group blocks HTTP.
+
+```bash
+sudo ss -ltnp | grep -E ':80|:3000|:4999'
+curl -i -H "Host: app.kreativespace.com" http://127.0.0.1
+```
+
+**Cloudflare 525**
+
+Cloudflare is set to Full/Strict but Caddy is serving HTTP-only origin. Set Cloudflare SSL/TLS mode to Flexible, or configure a Cloudflare Origin Certificate.
+
+**Preview TLS error for `ws-*.preview.domain.com`**
+
+Use `ws-*.domain.com` instead. Cloudflare Universal SSL usually does not cover nested wildcards.
+
+**No CSS in production**
+
+The standalone server is missing static assets. Rebuild with the current script:
+
+```bash
+npm run build
+pm2 restart dreamer-web --update-env
+```
+
+Emergency copy:
+
+```bash
+cd /home/ubuntu/dreamer/apps/web
+mkdir -p .next/standalone/.next
+cp -r .next/static .next/standalone/.next/static
+cp -r public .next/standalone/public 2>/dev/null || true
+pm2 restart dreamer-web --update-env
+```
+
+**Preview router crashes with `MODULE_NOT_FOUND`**
+
+```bash
+npm run router:install
+pm2 restart preview-router --update-env
+```
+
+**Next production server says `.next` build is missing**
+
+```bash
+npm run build
+pm2 restart dreamer-web --update-env
+```
+
+`ecosystem.config.js` runs `.next/standalone/server.js`, not `next start`.
+
+**SSH / EC2 Instance Connect stops working**
+
+Dreamer deploy commands should not close SSH. Check the EC2 security group inbound rule for port `22`, your current public IP, and the SSH service:
+
+```bash
+sudo systemctl status ssh --no-pager
+sudo ss -ltnp | grep ':22'
+sudo ufw status
+```
+
+`deploy/setup-ec2.sh` blocks outbound metadata-service access with iptables, but that does not block inbound SSH.
+
+## Project Structure
+
+```text
+dreamer/
+├── apps/web/              Next.js studio UI and API routes
+├── agent/                 Hermes agent bridge and tools
+├── preview-router/        Workspace subdomain to Podman port proxy
+├── Caddyfile              Production reverse proxy config
+├── ecosystem.config.js    PM2 process config
+└── package.json           Monorepo scripts
 ```
 
 Detailed EC2 notes live in [`apps/web/deploy.md`](apps/web/deploy.md).
 
----
-
-## Troubleshooting
-
-**`podman: command not found`**
-Podman isn't installed or isn't on your PATH. Follow the install steps above for your platform. On macOS make sure the Podman machine is running (`podman machine start`).
-
-**Preview iframe shows "Session not found"**
-The preview router doesn't know about this workspace yet. This usually means the container failed to start. Check logs:
-```bash
-# In apps/web directory
-podman ps --filter label=webmaker.preview=true
-podman logs preview-<workspace-id>
-```
-
-**`*.preview.localhost` doesn't resolve**
-The wildcard DNS isn't set up. Either install dnsmasq (see above) or add the specific workspace ID to `/etc/hosts` manually.
-
-**`npm run agent:install` fails with Python version error**
-The agent requires Python 3.11–3.13. Check your version with `python3 --version`. Use `uv python install 3.11` to install a compatible version.
-
-**Vite HMR doesn't update the preview after file changes**
-WebSocket proxying may not be enabled. On Cloudflare, go to Network → WebSockets → On. Locally, make sure the preview-router process is running (`npm run dev` starts it automatically).
-
-**Container keeps restarting / OOM killed**
-You're likely low on RAM. Each container needs ~300MB. On a machine with less than 2GB free, reduce `MAX_CONCURRENT_CONTAINERS` in `apps/web/lib/podman-preview.ts` (default: 10) and add swap:
-```bash
-sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
-sudo mkswap /swapfile && sudo swapon /swapfile
-```
-
----
-
 ## Contributing
 
-PRs welcome. Open an issue first for anything beyond a small bugfix.
-
 ```bash
-# Run tests
 npm run web:test
-
-# Lint
 cd apps/web && npm run lint
 ```

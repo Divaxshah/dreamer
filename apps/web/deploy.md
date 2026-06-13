@@ -2,8 +2,8 @@
 
 Dreamer runs the Next.js app directly with PM2. Hermes runs through the
 sandboxed `dreamer-hermes:local` Podman image. Live previews run as rootless
-Podman containers and are exposed through `*.preview.<domain>` via the root
-`preview-router`.
+Podman containers and are exposed through wildcard workspace subdomains via the
+root `preview-router`.
 
 ## Architecture
 
@@ -73,6 +73,21 @@ PREVIEW_ROUTER_IPC_URL=http://127.0.0.1:4998
 `WEBMAKER_PREVIEW_DOMAIN` to `preview-router`, so do not duplicate the domain in
 PM2 config. Keep it in `.env.local`.
 
+The example above is the recommended public mode: the browser uses HTTPS,
+Cloudflare handles TLS, and Caddy receives plain HTTP on the EC2 origin.
+
+For a temporary HTTP-only deployment without Cloudflare TLS, use HTTP for both
+the studio and previews:
+
+```bash
+NEXT_PUBLIC_APP_URL=http://app.kreativespace.com
+WEBMAKER_PREVIEW_PROTOCOL=http
+WEBMAKER_PREVIEW_PUBLIC_PORT=
+```
+
+Do not serve the studio over HTTPS while previews use HTTP. Browsers block HTTP
+iframes inside HTTPS pages as mixed content.
+
 ## Cloudflare DNS
 
 Create proxied DNS records:
@@ -99,10 +114,12 @@ A     app   <EC2 IPv4>  600
 A     *     <EC2 IPv4>  600
 ```
 
-GoDaddy DNS does not provide Cloudflare's proxy TLS. For HTTPS previews on
-wildcard subdomains, either move DNS to Cloudflare or configure Caddy public
-HTTPS with DNS-01 wildcard certificates. Cloudflare is the recommended route for
-Dreamer previews because Vite HMR WebSockets work cleanly through the proxy.
+GoDaddy DNS does not provide Cloudflare's proxy TLS. HTTP-only previews work
+with plain GoDaddy DNS, but the browser URL will be `http://...`. For HTTPS
+previews on wildcard subdomains, either move DNS to Cloudflare or configure
+Caddy public HTTPS with DNS-01 wildcard certificates. Cloudflare is the
+recommended route for Dreamer previews because Vite HMR WebSockets work cleanly
+through the proxy.
 
 ## Caddy
 
@@ -113,16 +130,36 @@ sudo apt-get update
 sudo apt-get install -y caddy
 ```
 
-Install the root `Caddyfile`:
+This Caddyfile is HTTP-only. It works for Cloudflare Flexible mode and for a
+temporary direct HTTP deployment:
+
+```text
+Cloudflare HTTPS -> Caddy HTTP origin   Recommended public setup
+Browser HTTP     -> Caddy HTTP          Temporary direct setup
+```
+
+Write the production Caddyfile:
 
 ```bash
-sudo cp /home/ubuntu/dreamer/Caddyfile /etc/caddy/Caddyfile
+sudo tee /etc/caddy/Caddyfile >/dev/null <<'CADDY'
+{
+  auto_https off
+}
+
+http://app.kreativespace.com {
+  reverse_proxy localhost:3000
+}
+
+http://*.kreativespace.com {
+  reverse_proxy localhost:4999
+}
+CADDY
 sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 sudo ss -ltnp | grep -E ':80|:3000|:4999'
 ```
 
-The included Caddyfile intentionally uses HTTP-only origins:
+The production Caddyfile intentionally uses HTTP-only origins:
 
 ```caddy
 {
@@ -142,6 +179,11 @@ This pairs with Cloudflare SSL/TLS mode **Flexible**. Cloudflare should point
 both `app.kreativespace.com` and `*.kreativespace.com` to the EC2 instance, with
 WebSockets enabled.
 
+The repo `Caddyfile` is a reusable template. systemd Caddy does not automatically
+read `apps/web/.env.local`, so write literal production domains into
+`/etc/caddy/Caddyfile` unless you also configure systemd environment variables
+for Caddy.
+
 If you want Cloudflare Full/Strict instead, install a Cloudflare Origin
 Certificate for `app.kreativespace.com` and `*.kreativespace.com`, remove the
 HTTP-only Caddy mode, and configure Caddy to serve that origin certificate.
@@ -150,7 +192,7 @@ HTTP-only Caddy mode, and configure Caddy to serve that origin certificate.
 
 ```bash
 cd /home/ubuntu/dreamer
-pm2 start ecosystem.config.js
+pm2 start ecosystem.config.js --update-env
 pm2 save
 ```
 
