@@ -69,12 +69,9 @@ WEBMAKER_PREVIEW_PUBLIC_PORT=
 PREVIEW_ROUTER_IPC_URL=http://127.0.0.1:4998
 ```
 
-Set the same `WEBMAKER_PREVIEW_DOMAIN` value for the `preview-router` PM2 process
-in the root `ecosystem.config.js`.
-
-```js
-WEBMAKER_PREVIEW_DOMAIN: "kreativespace.com"
-```
+`ecosystem.config.js` reads `apps/web/.env.local` and passes
+`WEBMAKER_PREVIEW_DOMAIN` to `preview-router`, so do not duplicate the domain in
+PM2 config. Keep it in `.env.local`.
 
 ## Cloudflare DNS
 
@@ -120,11 +117,34 @@ Install the root `Caddyfile`:
 
 ```bash
 sudo cp /home/ubuntu/dreamer/Caddyfile /etc/caddy/Caddyfile
+sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
+sudo ss -ltnp | grep -E ':80|:3000|:4999'
 ```
 
-Cloudflare should point both `app.kreativespace.com` and `*.kreativespace.com`
-to the EC2 instance, with WebSockets enabled.
+The included Caddyfile intentionally uses HTTP-only origins:
+
+```caddy
+{
+  auto_https off
+}
+
+http://app.kreativespace.com {
+  reverse_proxy localhost:3000
+}
+
+http://*.kreativespace.com {
+  reverse_proxy localhost:4999
+}
+```
+
+This pairs with Cloudflare SSL/TLS mode **Flexible**. Cloudflare should point
+both `app.kreativespace.com` and `*.kreativespace.com` to the EC2 instance, with
+WebSockets enabled.
+
+If you want Cloudflare Full/Strict instead, install a Cloudflare Origin
+Certificate for `app.kreativespace.com` and `*.kreativespace.com`, remove the
+HTTP-only Caddy mode, and configure Caddy to serve that origin certificate.
 
 ## Start
 

@@ -436,11 +436,9 @@ WEBMAKER_PREVIEW_PUBLIC_PORT=
 PREVIEW_ROUTER_IPC_URL=http://127.0.0.1:4998
 ```
 
-Set the preview-router domain in `ecosystem.config.js`:
-
-```js
-WEBMAKER_PREVIEW_DOMAIN: "kreativespace.com"
-```
+`ecosystem.config.js` reads `apps/web/.env.local` and passes
+`WEBMAKER_PREVIEW_DOMAIN` to `preview-router`, so keep the domain value in one
+place: `.env.local`.
 
 ### Cloudflare DNS
 
@@ -476,11 +474,36 @@ GoDaddy DNS alone does not provide Cloudflare's proxy TLS. For HTTPS previews on
 The Cloudflare route is recommended for this project because it also proxies
 preview WebSockets cleanly.
 
+### Caddy
+
+Caddy is the public HTTP origin that Cloudflare talks to. The included
+`Caddyfile` intentionally uses `http://` site labels with `auto_https off`:
+
+```caddy
+{
+  auto_https off
+}
+
+http://app.kreativespace.com {
+  reverse_proxy localhost:3000
+}
+
+http://*.kreativespace.com {
+  reverse_proxy localhost:4999
+}
+```
+
+That pairs with Cloudflare SSL/TLS mode **Flexible**. If Caddy binds only `:443`
+or Cloudflare is set to Full/Strict without an origin certificate, you will see
+Cloudflare `521` or `525` errors.
+
 Install/reload Caddy and start PM2:
 
 ```bash
 sudo cp /home/ubuntu/dreamer/Caddyfile /etc/caddy/Caddyfile
+sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
+sudo ss -ltnp | grep -E ':80|:3000|:4999'
 
 pm2 start ecosystem.config.js
 pm2 save
