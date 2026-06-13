@@ -277,12 +277,48 @@ For Cloudflare Full/Strict, install a Cloudflare Origin Certificate covering `ap
 
 ### 5. Start PM2
 
+Install PM2 once if it is not already available:
+
+```bash
+sudo npm install -g pm2
+pm2 --version
+```
+
+Start the two production processes:
+
 ```bash
 cd /home/ubuntu/dreamer
 pm2 delete all
 pm2 start ecosystem.config.js --update-env
 pm2 save
 pm2 status
+```
+
+Enable PM2 resurrect on server reboot:
+
+```bash
+pm2 startup systemd -u ubuntu --hp /home/ubuntu
+```
+
+PM2 prints a `sudo env ... pm2 startup ...` command. Run the exact command it prints, then run:
+
+```bash
+pm2 save
+```
+
+The PM2 config starts:
+
+```text
+dreamer-web      node .next/standalone/server.js on port 3000
+preview-router   preview subdomain proxy on port 4999, IPC on 4998
+```
+
+After changing `.env.local`, rebuild if needed and restart with the fresh env:
+
+```bash
+npm run build
+pm2 restart ecosystem.config.js --update-env
+pm2 save
 ```
 
 ### 6. Verify
@@ -322,7 +358,10 @@ PM2:
 pm2 status
 pm2 logs dreamer-web --lines 80
 pm2 logs preview-router --lines 80
+pm2 restart dreamer-web --update-env
+pm2 restart preview-router --update-env
 pm2 restart ecosystem.config.js --update-env
+pm2 save
 pm2 flush
 ```
 

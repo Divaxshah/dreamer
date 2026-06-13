@@ -188,11 +188,64 @@ If you want Cloudflare Full/Strict instead, install a Cloudflare Origin
 Certificate for `app.kreativespace.com` and `*.kreativespace.com`, remove the
 HTTP-only Caddy mode, and configure Caddy to serve that origin certificate.
 
-## Start
+## PM2
+
+Install PM2 once if it is not already available:
+
+```bash
+sudo npm install -g pm2
+pm2 --version
+```
+
+Start Dreamer:
 
 ```bash
 cd /home/ubuntu/dreamer
+pm2 delete all
 pm2 start ecosystem.config.js --update-env
+pm2 save
+pm2 status
+```
+
+`ecosystem.config.js` starts two processes:
+
+```text
+dreamer-web      node .next/standalone/server.js on port 3000
+preview-router   preview subdomain proxy on port 4999, IPC on 4998
+```
+
+Enable PM2 resurrect on server reboot:
+
+```bash
+pm2 startup systemd -u ubuntu --hp /home/ubuntu
+```
+
+PM2 prints a `sudo env ... pm2 startup ...` command. Run the exact command it
+prints, then run:
+
+```bash
+pm2 save
+```
+
+Useful PM2 commands:
+
+```bash
+pm2 status
+pm2 logs dreamer-web --lines 80
+pm2 logs preview-router --lines 80
+pm2 restart dreamer-web --update-env
+pm2 restart preview-router --update-env
+pm2 restart ecosystem.config.js --update-env
+pm2 flush
+```
+
+After changing `.env.local`, restart with `--update-env`. After pulling code or
+changing frontend code, rebuild first:
+
+```bash
+cd /home/ubuntu/dreamer
+npm run build
+pm2 restart ecosystem.config.js --update-env
 pm2 save
 ```
 
