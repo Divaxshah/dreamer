@@ -1,0 +1,14 @@
+FROM docker.io/nikolaik/python-nodejs:python3.12-nodejs20
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /opt/hermes
+
+COPY . /opt/hermes
+
+RUN python -m pip install --upgrade pip \
+    && python -m pip install -e .
+
+CMD ["python", "-m", "webmaker_bridge", "--runtime-info"]

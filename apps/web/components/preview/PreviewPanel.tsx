@@ -68,6 +68,11 @@ export function PreviewPanel({
     setPreviewRefreshKey((k) => k + 1);
   }, [workspaceId]);
 
+  const handleDockerPreviewReady = useCallback(() => {
+    setDockerForceRestart(false);
+    setDockerPreviewReady(true);
+  }, []);
+
   const openPreview = useCallback(async () => {
     setOpeningPreview(true);
     try {
@@ -203,10 +208,7 @@ export function PreviewPanel({
               refreshKey={previewRefreshKey}
               forceRestart={dockerForceRestart}
               onRetryFullRemount={retryPreview}
-              onReady={() => {
-                setDockerForceRestart(false);
-                setDockerPreviewReady(true);
-              }}
+              onReady={handleDockerPreviewReady}
             />
           ) : null}
         </div>

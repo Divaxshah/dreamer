@@ -29,6 +29,9 @@ interface RunHermesAgentLoopOptions {
 }
 
 const WORKSPACE_BASE = path.join(process.cwd(), ".webmaker", "workspaces");
+const CONTAINER_AGENT_PATH = "/opt/hermes";
+const CONTAINER_WORKSPACE_BASE = "/workspaces";
+const CONTAINER_HERMES_HOME = "/hermes-home";
 const MAX_SCAN_BYTES = 2_000_000;
 const IGNORED_DIRS = new Set([".git", ".next", "node_modules", "dist", "build"]);
 
@@ -75,15 +78,25 @@ interface HermesRuntimeInfo {
   hermesHome: string;
 }
 
+const resolveFromAppRoot = (value: string) =>
+  path.isAbsolute(value) ? value : path.resolve(process.cwd(), value);
+
 const hermesPath = () =>
-  process.env.WEBMAKER_HERMES_PATH?.trim() ||
-  path.resolve(process.cwd(), "../../agent");
+  resolveFromAppRoot(
+    process.env.WEBMAKER_HERMES_PATH?.trim() || "../../agent"
+  );
 const hermesPython = () => {
   const configured = process.env.WEBMAKER_HERMES_PYTHON?.trim();
-  if (configured) return configured;
+  if (configured) return resolveFromAppRoot(configured);
   return path.join(hermesPath(), ".venv", "bin", "python");
 };
-const hermesHome = () => process.env.WEBMAKER_HERMES_HOME || "";
+const hermesHome = () =>
+  process.env.WEBMAKER_HERMES_HOME?.trim() ||
+  (process.env.HOME ? path.join(process.env.HOME, ".hermes") : "");
+const hermesRunner = () =>
+  (process.env.WEBMAKER_HERMES_RUNNER?.trim().toLowerCase() || "podman");
+const hermesImage = () =>
+  process.env.WEBMAKER_HERMES_IMAGE?.trim() || "dreamer-hermes:local";
 
 const apiKeyEnvForProvider = (provider: string, apiKey: string): Record<string, string> => {
   const key = apiKey.trim();
@@ -120,6 +133,93 @@ const hermesEnv = (provider = "", apiKey = "") => {
         HERMES_HOME: home,
       }
     : base;
+};
+
+const workspaceContainerPath = (workspaceRoot: string) =>
+  path.posix.join(CONTAINER_WORKSPACE_BASE, path.basename(workspaceRoot));
+
+const ensureHermesMounts = async () => {
+  await mkdir(WORKSPACE_BASE, { recursive: true });
+  const home = hermesHome();
+  if (home) {
+    await mkdir(home, { recursive: true });
+  }
+};
+
+const bridgeSpawn = async (
+  args: string[],
+  options: {
+    provider?: string;
+    apiKey?: string;
+  } = {}
+) => {
+  if (hermesRunner() === "local") {
+    return spawn(hermesPython(), ["-m", "webmaker_bridge", ...args], {
+      cwd: hermesPath(),
+      env: {
+        ...hermesEnv(options.provider, options.apiKey),
+        WEBMAKER_WORKSPACE_ROOT: WORKSPACE_BASE,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  }
+
+  await ensureHermesMounts();
+  const env = hermesEnv(options.provider, options.apiKey);
+  const podmanEnv: NodeJS.ProcessEnv = { ...process.env };
+  const podmanArgs = [
+    "run",
+    "--rm",
+    "-i",
+    "--userns",
+    "keep-id",
+    "-v",
+    `${hermesPath()}:${CONTAINER_AGENT_PATH}:ro`,
+    "-v",
+    `${WORKSPACE_BASE}:${CONTAINER_WORKSPACE_BASE}:rw`,
+    "-w",
+    CONTAINER_AGENT_PATH,
+    "-e",
+    `WEBMAKER_WORKSPACE_ROOT=${CONTAINER_WORKSPACE_BASE}`,
+    "-e",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "-e",
+    "WEBMAKER_HERMES_INSIDE_CONTAINER=1",
+  ];
+
+  const home = hermesHome();
+  if (home) {
+    podmanArgs.push("-v", `${home}:${CONTAINER_HERMES_HOME}:rw`);
+    podmanArgs.push("-e", `HERMES_HOME=${CONTAINER_HERMES_HOME}`);
+  }
+
+  for (const key of [
+    "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "XAI_API_KEY",
+    "WEBMAKER_HERMES_MODEL",
+    "WEBMAKER_HERMES_PROVIDER",
+    "HERMES_MODEL",
+    "HERMES_PROVIDER",
+    "WEBMAKER_PREVIEW_IMAGE",
+    "WEBMAKER_DOCKER_IMAGE",
+  ]) {
+    const value = env[key];
+    if (value) {
+      podmanEnv[key] = value;
+      podmanArgs.push("-e", key);
+    }
+  }
+
+  podmanArgs.push(hermesImage(), "python", "-m", "webmaker_bridge", ...args);
+
+  return spawn("podman", podmanArgs, {
+    env: podmanEnv,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
 };
 
 const logHermes = (message: string, detail?: unknown) => {
@@ -332,14 +432,13 @@ export const readHermesRuntimeInfo = async (): Promise<HermesRuntimeInfo> => {
   logHermes("reading runtime info", {
     hermesPath: hermesPath(),
     python: hermesPython(),
+    runner: hermesRunner(),
+    image: hermesImage(),
     hermesHome: hermesHome() || "(Hermes default)",
   });
 
-  const child = spawn(hermesPython(), ["-m", "webmaker_bridge", "--runtime-info"], {
-    cwd: hermesPath(),
-    env: hermesEnv(),
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const child = await bridgeSpawn(["--runtime-info"]);
+  child.stdin?.end();
 
   let stdout = "";
   let stderr = "";
@@ -408,6 +507,8 @@ export const runHermesAgentLoop = async (options: RunHermesAgentLoopOptions) => 
     requestedProvider ||
     process.env.HERMES_PROVIDER ||
     (runtimeInfo.provider !== "Hermes configured default" ? runtimeInfo.provider : "");
+  const effectiveModel = hermesModel || runtimeInfo.model;
+  const effectiveProvider = hermesProvider || runtimeInfo.provider;
 
   await materializeProject(workspaceRoot, project);
 
@@ -418,7 +519,7 @@ export const runHermesAgentLoop = async (options: RunHermesAgentLoopOptions) => 
       kind: "runtime",
       status: "completed",
       title: "Hermes backend",
-      detail: `Using Hermes at ${bridgePath}. Model: ${runtimeInfo.model}; provider: ${runtimeInfo.provider}; home: ${runtimeInfo.hermesHome || "Hermes default"}.`,
+      detail: `Using Hermes at ${bridgePath}. Model: ${effectiveModel}; provider: ${effectiveProvider}; home: ${runtimeInfo.hermesHome || "Hermes default"}.`,
       tool: "hermes.bridge",
     },
   });
@@ -426,19 +527,17 @@ export const runHermesAgentLoop = async (options: RunHermesAgentLoopOptions) => 
   logHermes("starting generation", {
     hermesPath: bridgePath,
     python,
+    runner: hermesRunner(),
+    image: hermesImage(),
     workspaceRoot,
-    model: hermesModel || runtimeInfo.model,
-    provider: runtimeInfo.provider,
+    model: effectiveModel,
+    provider: effectiveProvider,
     hermesHome: runtimeInfo.hermesHome || "(Hermes default)",
   });
 
-  const child = spawn(python, ["-m", "webmaker_bridge"], {
-    cwd: bridgePath,
-    env: {
-      ...hermesEnv(hermesProvider, options.apiKey),
-      WEBMAKER_WORKSPACE_ROOT: WORKSPACE_BASE,
-    },
-    stdio: ["pipe", "pipe", "pipe"],
+  const child = await bridgeSpawn([], {
+    provider: hermesProvider,
+    apiKey: options.apiKey,
   });
 
   const abort = () => {
@@ -448,7 +547,8 @@ export const runHermesAgentLoop = async (options: RunHermesAgentLoopOptions) => 
 
   const request = {
     sessionId: options.sessionWorkspace?.id,
-    workspaceRoot,
+    workspaceRoot:
+      hermesRunner() === "local" ? workspaceRoot : workspaceContainerPath(workspaceRoot),
     messages: options.messages,
     currentProject: project,
     model: hermesModel,
@@ -463,6 +563,27 @@ export const runHermesAgentLoop = async (options: RunHermesAgentLoopOptions) => 
   let sawTerminalEvent = false;
 
   await new Promise<void>((resolve, reject) => {
+    let stdoutProcessing = Promise.resolve();
+
+    const processStdoutLines = async (lines: string[]) => {
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const parsed = parseHermesBridgeLine(line);
+        if (!parsed) {
+          logHermes(`stdout: ${truncateLogValue(line)}`);
+          stderr += `${line}\n`;
+          continue;
+        }
+        logHermesEvent(parsed);
+        const normalized = await normalizeHermesEvent(parsed, project, workspaceRoot);
+        if (!normalized) continue;
+        if (normalized.type === "complete" || normalized.type === "aborted") {
+          sawTerminalEvent = true;
+        }
+        await options.onEvent(normalized);
+      }
+    };
+
     child.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8");
       stderr += text;
@@ -477,29 +598,20 @@ export const runHermesAgentLoop = async (options: RunHermesAgentLoopOptions) => 
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() ?? "";
 
-      void (async () => {
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const parsed = parseHermesBridgeLine(line);
-          if (!parsed) {
-            logHermes(`stdout: ${truncateLogValue(line)}`);
-            stderr += `${line}\n`;
-            continue;
-          }
-          logHermesEvent(parsed);
-          const normalized = await normalizeHermesEvent(parsed, project, workspaceRoot);
-          if (!normalized) continue;
-          if (normalized.type === "complete" || normalized.type === "aborted") {
-            sawTerminalEvent = true;
-          }
-          await options.onEvent(normalized);
-        }
-      })().catch(reject);
+      stdoutProcessing = stdoutProcessing
+        .then(() => processStdoutLines(lines))
+        .catch(reject);
     });
 
     child.on("error", reject);
     child.on("close", async (code) => {
       try {
+        if (buffer.trim()) {
+          const finalLine = buffer;
+          buffer = "";
+          stdoutProcessing = stdoutProcessing.then(() => processStdoutLines([finalLine]));
+        }
+        await stdoutProcessing;
         logHermes("generation process closed", { code });
         if (options.signal?.aborted) {
           const finalProject = await projectFromWorkspace(workspaceRoot, project);

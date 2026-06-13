@@ -42,8 +42,9 @@ anti-generic-AI-slop rules override your default styling instincts. If the skill
 content is not present in context, call skill_view("software-development/frontend-design")
 before writing or editing frontend code.
 
-Before completion, inspect your changes and run an appropriate verification
-command when the project supports it.
+Before completion, inspect your changes. You may use the terminal tool for
+supported verification commands; in Webmaker mode terminal commands are routed
+through a Podman sandbox mounted at /app, not through the host shell.
 """
 
 
@@ -334,25 +335,33 @@ class ReasoningEmitter:
 
 
 def configured_model(request: Dict[str, Any]) -> tuple[str, str]:
-    env_model = os.environ.get("WEBMAKER_HERMES_MODEL") or os.environ.get("HERMES_MODEL")
-    if env_model:
-        return env_model, "environment"
+    webmaker_model = os.environ.get("WEBMAKER_HERMES_MODEL")
+    if webmaker_model:
+        return webmaker_model, "Webmaker environment"
 
     request_model = request.get("model")
     if isinstance(request_model, str) and request_model.strip():
         return request_model.strip(), "request"
 
+    env_model = os.environ.get("HERMES_MODEL")
+    if env_model:
+        return env_model, "Hermes environment"
+
     return "", "Hermes default"
 
 
 def configured_provider(request: Dict[str, Any]) -> tuple[str, str]:
-    env_provider = os.environ.get("WEBMAKER_HERMES_PROVIDER") or os.environ.get("HERMES_PROVIDER")
-    if env_provider:
-        return env_provider, "environment"
+    webmaker_provider = os.environ.get("WEBMAKER_HERMES_PROVIDER")
+    if webmaker_provider:
+        return webmaker_provider, "Webmaker environment"
 
     request_provider = request.get("provider")
     if isinstance(request_provider, str) and request_provider.strip():
         return request_provider.strip(), "request"
+
+    env_provider = os.environ.get("HERMES_PROVIDER")
+    if env_provider:
+        return env_provider, "Hermes environment"
 
     try:
         info = read_hermes_runtime_info()

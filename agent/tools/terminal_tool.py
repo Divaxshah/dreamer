@@ -67,6 +67,182 @@ def _webmaker_command_allowed(command: str) -> bool:
     return parts in _WEBMAKER_ALLOWED_COMMANDS
 
 
+def _webmaker_workspace_path() -> Path:
+    workspace = Path.cwd().resolve()
+    allowed_raw = os.environ.get("WEBMAKER_WORKSPACE_ROOT", "").strip()
+    if allowed_raw:
+        allowed = Path(allowed_raw).expanduser().resolve()
+        try:
+            workspace.relative_to(allowed)
+        except ValueError as exc:
+            raise ValueError(f"Webmaker terminal cwd must be inside {allowed}") from exc
+    return workspace
+
+
+def _webmaker_container_name(workspace: Path) -> str:
+    safe_id = re.sub(r"[^a-zA-Z0-9._-]", "-", workspace.name)[:120] or "default"
+    return f"preview-{safe_id}"
+
+
+def _webmaker_preview_container_running(container_name: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["podman", "inspect", "--format", "{{.State.Running}}", container_name],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+        return result.returncode == 0 and result.stdout.strip() == "true"
+    except Exception:
+        return False
+
+
+def _run_webmaker_command_in_current_container(command: str, timeout: int | None = None) -> str:
+    timeout_seconds = timeout or _parse_env_var("TERMINAL_TIMEOUT", "180")
+    try:
+        result = subprocess.run(
+            ["sh", "-lc", command],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout_seconds,
+            check=False,
+        )
+        return json.dumps(
+            {
+                "output": result.stdout,
+                "exit_code": result.returncode,
+                "error": "" if result.returncode == 0 else result.stdout,
+                "status": "success" if result.returncode == 0 else "error",
+                "sandbox": "hermes-container",
+            },
+            ensure_ascii=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = exc.stdout if isinstance(exc.stdout, str) else ""
+        return json.dumps(
+            {
+                "output": output,
+                "exit_code": -1,
+                "error": f"Webmaker container command timed out after {timeout_seconds}s.",
+                "status": "timeout",
+                "sandbox": "hermes-container",
+            },
+            ensure_ascii=False,
+        )
+    except Exception as exc:
+        return json.dumps(
+            {
+                "output": "",
+                "exit_code": -1,
+                "error": f"Failed to run Webmaker command in Hermes container: {exc}",
+                "status": "error",
+                "sandbox": "hermes-container",
+            },
+            ensure_ascii=False,
+        )
+
+
+def _run_webmaker_command_in_podman(command: str, timeout: int | None = None) -> str:
+    image = (
+        os.environ.get("WEBMAKER_PREVIEW_IMAGE", "").strip()
+        or os.environ.get("WEBMAKER_DOCKER_IMAGE", "").strip()
+        or "node:20-alpine"
+    )
+    workspace = _webmaker_workspace_path()
+    container_name = _webmaker_container_name(workspace)
+    timeout_seconds = timeout or _parse_env_var("TERMINAL_TIMEOUT", "180")
+    if _webmaker_preview_container_running(container_name):
+        podman_args = [
+            "podman",
+            "exec",
+            "-w",
+            "/app",
+            container_name,
+            "sh",
+            "-lc",
+            command,
+        ]
+        sandbox = "podman:preview-container"
+    else:
+        podman_args = [
+            "podman",
+                "run",
+                "--rm",
+                "--userns",
+                "keep-id",
+                "-v",
+            f"{workspace}:/app",
+            "-w",
+            "/app",
+            "--memory",
+            "512m",
+            "--cpus",
+            "0.5",
+            image,
+            "sh",
+            "-lc",
+            command,
+        ]
+        sandbox = "podman:one-shot"
+
+    try:
+        result = subprocess.run(
+            podman_args,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout_seconds,
+            check=False,
+        )
+        return json.dumps(
+            {
+                "output": result.stdout,
+                "exit_code": result.returncode,
+                "error": "" if result.returncode == 0 else result.stdout,
+                "status": "success" if result.returncode == 0 else "error",
+                "sandbox": sandbox,
+            },
+            ensure_ascii=False,
+        )
+    except FileNotFoundError:
+        return json.dumps(
+            {
+                "output": "",
+                "exit_code": -1,
+                "error": "Podman is not installed or not available on PATH.",
+                "status": "error",
+                "sandbox": sandbox,
+            },
+            ensure_ascii=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = exc.stdout if isinstance(exc.stdout, str) else ""
+        return json.dumps(
+            {
+                "output": output,
+                "exit_code": -1,
+                "error": f"Webmaker Podman command timed out after {timeout_seconds}s.",
+                "status": "timeout",
+                "sandbox": sandbox,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as exc:
+        return json.dumps(
+            {
+                "output": "",
+                "exit_code": -1,
+                "error": f"Failed to run Webmaker command in Podman: {exc}",
+                "status": "error",
+                "sandbox": sandbox,
+            },
+            ensure_ascii=False,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Global interrupt event: set by the agent when a user interrupt arrives.
 # The terminal tool polls this during command execution so it can kill
@@ -1843,13 +2019,24 @@ def terminal_tool(
                 "status": "error",
             }, ensure_ascii=False)
 
-        if os.environ.get("WEBMAKER_HERMES_TERMINAL_POLICY") == "1" and not _webmaker_command_allowed(command):
-            return json.dumps({
-                "output": "",
-                "exit_code": -1,
-                "error": "Webmaker Hermes mode only allows npm install, npm run build, npm run dev, npm test, and npm run lint.",
-                "status": "error",
-            }, ensure_ascii=False)
+        if os.environ.get("WEBMAKER_HERMES_TERMINAL_POLICY") == "1":
+            if background:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": "Webmaker Hermes mode runs terminal commands in one-shot Podman sandboxes. Use the Webmaker preview container for long-running dev servers.",
+                    "status": "error",
+                }, ensure_ascii=False)
+            if not _webmaker_command_allowed(command):
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": "Webmaker Hermes mode only allows npm install, npm run build, npm run dev, npm test, and npm run lint inside Podman.",
+                    "status": "error",
+                }, ensure_ascii=False)
+            if os.environ.get("WEBMAKER_HERMES_INSIDE_CONTAINER") == "1":
+                return _run_webmaker_command_in_current_container(command, timeout=timeout)
+            return _run_webmaker_command_in_podman(command, timeout=timeout)
 
         # Get configuration
         config = _get_env_config()

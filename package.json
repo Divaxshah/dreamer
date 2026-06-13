@@ -11,6 +11,7 @@
     "web:install": "npm --prefix apps/web install",
     "router:install": "npm --prefix preview-router install",
     "router:start": "npm --prefix preview-router start",
-    "agent:install": "python3 -m venv agent/.venv && agent/.venv/bin/python -m pip install -e agent"
+    "agent:install": "python3 -m venv agent/.venv && agent/.venv/bin/python -m pip install -e agent",
+    "hermes:image": "podman build -f agent/Containerfile -t dreamer-hermes:local agent"
   }
 }

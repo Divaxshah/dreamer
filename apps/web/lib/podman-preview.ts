@@ -104,6 +104,14 @@ const getPreviewPortSuffix = (): string => {
 const getPreviewUrl = (workspaceId: string): string =>
   `${getPreviewProtocol()}://${sanitizeWorkspaceId(workspaceId)}.${getPreviewDomain()}${getPreviewPortSuffix()}`;
 
+const getDirectPreviewUrl = (hostPort: number): string =>
+  `http://127.0.0.1:${hostPort}`;
+
+const getBrowserPreviewUrl = (workspaceId: string, hostPort: number): string =>
+  getPreviewDomain().endsWith(".localhost")
+    ? getDirectPreviewUrl(hostPort)
+    : getPreviewUrl(workspaceId);
+
 const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
 
 const withPreviewLock = async <T>(
@@ -247,6 +255,17 @@ async function inspectStartedAt(containerName: string): Promise<string> {
   }
 }
 
+async function readContainerLogTail(containerName: string): Promise<string> {
+  try {
+    const { stdout } = await execAsync(
+      `podman logs --tail 80 ${shellQuote(containerName)}`
+    );
+    return stdout.trim();
+  } catch {
+    return "";
+  }
+}
+
 async function isContainerRunning(containerName: string): Promise<boolean> {
   try {
     const { stdout } = await execAsync(
@@ -275,7 +294,7 @@ async function hydrateActivePreviewFromPodman(
     workspaceId: key,
     containerId: containerId || containerName,
     hostPort,
-    url: getPreviewUrl(key),
+    url: getBrowserPreviewUrl(key, hostPort),
     startedAt: await inspectStartedAt(containerName),
     reused: true,
   };
@@ -448,6 +467,7 @@ export async function startDockerPreview(
       `--name ${shellQuote(containerName)}`,
       `--label ${shellQuote(`webmaker.workspace=${key}`)}`,
       "--label webmaker.preview=true",
+      "--userns keep-id",
       `-v ${shellQuote(`${workspacePath}:/app`)}`,
       `-p 127.0.0.1::${PREVIEW_PORT}`,
       "--memory 512m",
@@ -462,13 +482,24 @@ export async function startDockerPreview(
     const hostPort = await readContainerHostPort(containerName);
     previewPortRegistry.set(key, hostPort);
     void registerPreviewPort(key, hostPort);
-    await waitForDevServer(hostPort);
+    try {
+      await waitForDevServer(hostPort);
+    } catch (error) {
+      const logs = await readContainerLogTail(containerName);
+      throw new Error(
+        logs
+          ? `Dev server did not become ready in the Podman container.\n\nRecent container logs:\n${logs}`
+          : error instanceof Error
+            ? error.message
+            : "Dev server did not become ready in the Podman container."
+      );
+    }
 
     const session: DockerPreviewSession = {
       workspaceId: key,
       containerId,
       hostPort,
-      url: getPreviewUrl(key),
+      url: getBrowserPreviewUrl(key, hostPort),
       startedAt: new Date().toISOString(),
       reused: false,
     };

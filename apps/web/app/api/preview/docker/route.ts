@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const body = (await request.json()) as {
+    const body = (await request.json().catch(() => ({}))) as {
       project?: GeneratedProject;
       workspaceId?: string;
       force?: boolean;

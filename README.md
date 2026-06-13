@@ -158,6 +158,9 @@ npm run web:install
 
 # Install Python agent dependencies
 npm run agent:install
+
+# Build the sandboxed Hermes bridge image used by Webmaker
+npm run hermes:image
 ```
 
 ### 2. Configure environment
